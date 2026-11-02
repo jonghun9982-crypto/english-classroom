@@ -1,0 +1,4 @@
+node_modules/
+shots/
+test/result-*.json
+test/dbg.js

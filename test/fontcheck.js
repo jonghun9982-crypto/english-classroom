@@ -1,0 +1,4 @@
+const {webkit,devices}=require('/workspace/wk/node_modules/playwright');
+(async()=>{const b=await webkit.launch({env:{...process.env,GIO_EXTRA_MODULES:'/workspace/wk/gio'}});const pg=await (await b.newContext({...devices['iPhone 15 Pro']})).newPage();
+await pg.goto('http://localhost:8140/index.html?nosw#1');await pg.evaluate(()=>document.fonts.ready);
+console.log(await pg.evaluate(()=>({pretendard:document.fonts.check('700 16px "Pretendard Variable"'),tnum:getComputedStyle(document.querySelector('.step')).fontFamily.slice(0,30), grad:[...document.styleSheets].some(s=>{try{return [...s.cssRules].some(r=>/gradient/.test(r.cssText))}catch(e){return false}}), red:/#f00|red|#e5|#ff3b30/i.test([...document.styleSheets].map(s=>{try{return [...s.cssRules].map(r=>r.cssText).join('')}catch(e){return ''}}).join(''))})));await b.close();})();

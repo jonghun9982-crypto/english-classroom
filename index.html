@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E0F12">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="영어 교실">
+<meta name="format-detection" content="telephone=no">
+<title>가상 영어 교실</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app" id="app">
+<header><h1 id="title">자료 넣기</h1><span class="step num" id="step"><b>1</b> / 4 단계</span></header>
+
+<!-- ① 자료 넣기 -->
+<section class="screen" id="s1" data-title="자료 넣기">
+  <form class="field glass" id="linkForm" autocomplete="off">
+    <input id="linkIn" type="url" inputmode="url" aria-label="뉴스 링크" placeholder="뉴스 링크 붙여넣기" enterkeyhint="go">
+    <button class="pbtn" type="submit">불러오기</button>
+  </form>
+  <div class="or"><span class="step">링크 대신 파일로</span><button class="txtbtn" id="pdfBtn" type="button">PDF 고르기</button>
+    <input type="file" id="pdfIn" accept="application/pdf,.pdf" hidden></div>
+  <p class="notice" id="notice1" role="status" hidden></p>
+  <article class="art glass" id="artCard">
+    <div class="chips" id="artTags"></div>
+    <h3 id="artTitle"></h3>
+    <div class="seg" id="seg" role="tablist" aria-label="읽기 수준">
+      <button type="button" data-lv="easy">쉬움</button><button type="button" data-lv="mid" class="on">보통</button><button type="button" data-lv="orig">원문</button>
+    </div>
+    <ol class="sum" id="artSum"></ol>
+    <p class="q">오늘의 질문 · <b id="artQ"></b></p>
+  </article>
+  <div class="lbl" style="margin-top:12px">단어 카드 <small>눌러서 단어장에 저장</small></div>
+  <div class="words" id="words"></div>
+  <div class="cta"><button class="txtbtn sub" id="origBtn" type="button">원문 보기</button><a class="pbtn" href="#2">교실 입장</a></div>
+</section>
+
+<!-- ② 교실 입장 -->
+<section class="screen" id="s2" data-title="교실 입장">
+  <div class="seats big glass" id="seatsBig" aria-label="원탁 좌석"><div class="tbl"></div></div>
+  <div class="say glass talk" style="--c:var(--t)"><div class="who"><span class="dot"></span>Ms. Ellie · 선생님</div><p id="welcome"></p></div>
+  <div class="lbl">오늘의 반 친구 <small class="num">3명</small></div>
+  <ul class="cast" id="cast"></ul>
+  <p class="note-ex"><span class="tag">예시 대본</span> 지금은 미리 써둔 대본으로 수업해요. 진짜 AI 토론은 곧 연결할게요.</p>
+  <div class="cta"><button class="txtbtn sub" id="ttsBtn" type="button" aria-pressed="false">선생님 목소리 · 끔</button><button class="pbtn" id="startBtn" type="button">수업 시작</button></div>
+</section>
+
+<!-- ③ 토론 -->
+<section class="screen" id="s3" data-title="토론">
+  <div class="seats glass" id="seatsSmall" style="--h:86px" aria-label="원탁 좌석"></div>
+  <div class="qcard glass"><div class="qhead num"><span id="qNum">질문 1 / 3</span><div class="bar"><i id="qBar" style="--w:33%"></i></div><span>찬반토론</span></div><p id="qText"></p></div>
+  <div class="chat" id="chat" aria-live="polite"></div>
+  <form class="composer" id="composer" autocomplete="off">
+    <button class="gbtn glass" id="handBtn" type="button" style="min-height:52px">🙋 손들기</button>
+    <label class="in glass"><input id="replyIn" placeholder="영어로 내 생각 쓰기" aria-label="내 답변" enterkeyhint="send" autocapitalize="sentences" spellcheck="false" autocorrect="off"></label>
+    <button class="send glass" id="sendBtn" type="submit" aria-label="보내기">보내기</button>
+  </form>
+</section>
+
+<!-- ④ 내 생각 노트 -->
+<section class="screen" id="s4" data-title="내 생각 노트">
+  <div id="noteBody"></div>
+</section>
+
+<nav class="tabs" aria-label="수업 단계">
+  <a href="#1"><b>1</b><span>자료 넣기</span></a><a href="#2"><b>2</b><span>교실 입장</span></a><a href="#3"><b>3</b><span>토론</span></a><a href="#4"><b>4</b><span>내 생각 노트</span></a>
+</nav>
+
+<!-- 원문 / 단어장 시트 -->
+<div class="sheet-back" id="sheetBack" hidden></div>
+<div class="sheet glass" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden>
+  <div class="sheet-h"><h2 id="sheetTitle">원문</h2><button class="txtbtn" id="sheetClose" type="button">닫기</button></div>
+  <div class="sheet-b" id="sheetBody"></div>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+</div>
+<script src="js/data.js"></script>
+<script src="js/text.js"></script>
+<script src="js/script.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
