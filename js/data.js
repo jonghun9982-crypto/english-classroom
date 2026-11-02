@@ -97,7 +97,7 @@ const KEY = "eclass.v1";
 function fresh(){
   const now = Date.now();
   return { version:1, createdAt:now, updatedAt:now,
-    settings:{ name:"Jonghoon", tts:false, correction:"balanced" },
+    settings:{ name:"Jonghoon", tts:true, voiceDefault2:1, correction:"balanced" },
     currentArticleId:EC.EXAMPLE_ARTICLE.id,
     articles:[JSON.parse(JSON.stringify(EC.EXAMPLE_ARTICLE))],
     sessions:[], notes:[], words:[] };
@@ -106,7 +106,9 @@ function migrate(d){
   if(!d || typeof d!=="object") return fresh();
   const f = fresh();
   for(const k of ["settings","articles","sessions","notes","words"]) if(d[k]==null) d[k]=f[k];
+  const hadV2 = d.settings && d.settings.voiceDefault2;
   d.settings = Object.assign({}, f.settings, d.settings);
+  if(!hadV2){ d.settings.tts = true; d.settings.voiceDefault2 = 1; }   // 목소리 기본 켬 (한 번만 적용, 이후엔 사용자가 고른 대로)
   if(!d.articles.some(a=>a.id===EC.EXAMPLE_ARTICLE.id)) d.articles.unshift(f.articles[0]);
   if(!d.currentArticleId || !d.articles.some(a=>a.id===d.currentArticleId)) d.currentArticleId = EC.EXAMPLE_ARTICLE.id;
   d.version = 1;

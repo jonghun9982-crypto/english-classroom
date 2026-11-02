@@ -7,7 +7,7 @@ const esc = EC.esc;
 const S = EC.store; S.load();
 const D = () => S.data;
 const params = new URLSearchParams(location.search);
-const SPEED = params.has("fast") ? 0.04 : 1;          // 테스트용 빠른 재생 (?fast)
+const SPEED = params.has("fast") ? 0.04 : (+params.get("speed") > 0 ? +params.get("speed") : 1);   // 테스트용 빠른 재생 (?fast, ?speed=)
 const sleep = ms => new Promise(r=>setTimeout(r, ms*SPEED));
 const name = () => D().settings.name || "Jonghoon";
 
@@ -21,6 +21,7 @@ function route(){
   $("#title").textContent = s.dataset.title;
   $("#step").innerHTML = "<b>"+n+"</b> / 4 단계";
   closeSheet(); $("#toast").hidden = true;
+  if(n!=="3") halt();          // 토론 화면을 떠나면 말하던 소리·대기 줄을 멈춤 (돌아오면 다음 대사부터 이어감)
   if(n==="1") renderS1();
   if(n==="2") renderS2();
   if(n==="3") renderS3();
@@ -144,27 +145,110 @@ function seatsHTML(big, talk, hand){
   }).join("");
 }
 
-/* ---------------- ② 교실 입장 ---------------- */
-const tts = { ok: "speechSynthesis" in window && typeof SpeechSynthesisUtterance!=="undefined", unlocked:false, voice:null };
-function pickVoice(){
-  if(!tts.ok) return null;
-  const vs = speechSynthesis.getVoices();
-  return vs.find(v=>/en-US/i.test(v.lang) && /Samantha|Ava|Allison|Susan|Google US/i.test(v.name)) || vs.find(v=>/^en[-_]US/i.test(v.lang)) || vs.find(v=>/^en/i.test(v.lang)) || null;
+/* ---------------- 목소리 (speechSynthesis) ----------------
+  · 선생님·친구마다 다른 목소리 (없으면 같은 목소리에 높낮이·속도만 다르게)
+  · 한 번에 한 사람만 말함 (겹치지 않게), 다음 사람은 onend + 0.6초 뒤
+  · iOS: 「수업 시작」 탭 안에서 처음 말해야 소리가 풀림 */
+const tts = { ok: "speechSynthesis" in window && typeof SpeechSynthesisUtterance!=="undefined", unlocked:false, map:null, tok:0, cur:null, curFin:null, pending:null, ctl:null };
+const GAP = 600;
+const NOVELTY = /Albert|Bad News|Bahh|Bells|Boing|Bubbles|Cellos|Good News|Jester|Organ|Superstar|Trinoids|Whisper|Wobble|Zarvox|Junior|Ralph|Kathy|Grandpa|Grandma|Eddy|Flo\b|Reed|Rocko|Sandy|Shelley|Princess|Deranged|Hysterical|Pipe/i;
+const VOICE_PREF = {
+  ellie:{ names:[/Samantha/i,/\bAva\b/i,/Allison/i,/Susan/i,/Zoe/i,/Nicky/i,/Google US English/i,/Aria|Jenny/i], langs:[/en[-_]US/i], pitch:1.05, rate:0.95 },
+  max:  { names:[/Daniel/i,/Arthur/i,/Oliver/i,/Google UK English Male/i,/Ryan|Guy/i,/Aaron/i,/Tom\b/i,/Alex\b/i,/Fred/i], langs:[/en[-_]GB/i,/en[-_]US/i], pitch:0.9, rate:1.0 },
+  yuna: { names:[/Karen/i,/Moira/i,/Tessa/i,/Serena/i,/Kate\b/i,/Catherine/i,/Martha/i,/Google UK English Female/i,/Sonia|Natasha/i], langs:[/en[-_]AU/i,/en[-_]IE/i,/en[-_]ZA/i,/en[-_]GB/i], pitch:1.15, rate:1.02 },
+  leo:  { names:[/Rishi/i,/Gordon/i,/\bLee\b/i,/Aaron/i,/Fred/i,/Tom\b/i,/William|Connor/i], langs:[/en[-_]IN/i,/en[-_]AU/i,/en[-_]US/i], pitch:1.0, rate:1.08 }
+};
+const SHARED = { ellie:{pitch:1.08,rate:0.94}, max:{pitch:0.7,rate:0.98}, yuna:{pitch:1.45,rate:1.06}, leo:{pitch:0.95,rate:1.16} };
+const quality = v => (/premium/i.test(v.name+v.voiceURI)?3:/enhanced/i.test(v.name+v.voiceURI)?2:0) + (v.localService?1:0);
+function assignVoices(){
+  let all = [];
+  try{ all = speechSynthesis.getVoices().filter(v=>/^en/i.test(v.lang) && !NOVELTY.test(v.name)); }catch(e){}
+  all.sort((x,y)=>quality(y)-quality(x));
+  const used = new Set(), map = {};
+  for(const id of ["ellie","max","yuna","leo"]){
+    const pr = VOICE_PREF[id]; let v = null;
+    for(const re of pr.names){ v = all.find(x=>re.test(x.name) && !used.has(x.voiceURI||x.name)); if(v) break; }
+    if(!v) for(const re of pr.langs){ v = all.find(x=>re.test(x.lang) && !used.has(x.voiceURI||x.name)); if(v) break; }
+    if(!v) v = all.find(x=>!used.has(x.voiceURI||x.name)) || null;
+    if(v) used.add(v.voiceURI||v.name);
+    map[id] = { voice:v, pitch:pr.pitch, rate:pr.rate, shared:false };
+  }
+  // 다른 목소리를 못 찾은 사람은 선생님(또는 첫) 목소리를 같이 쓰고 높낮이·속도로 구분
+  const base = map.ellie.voice || all[0] || null;
+  for(const id in map) if(!map[id].voice){ map[id].voice = base; map[id].shared = true; }
+  const cnt = {}; for(const id in map){ const k = map[id].voice ? (map[id].voice.voiceURI||map[id].voice.name) : "-"; cnt[k]=(cnt[k]||0)+1; }
+  for(const id in map){ const k = map[id].voice ? (map[id].voice.voiceURI||map[id].voice.name) : "-"; if(cnt[k]>1){ map[id].shared = true; Object.assign(map[id], SHARED[id]); } }
+  tts.map = map; return map;
 }
-if(tts.ok){ try{ speechSynthesis.onvoiceschanged = ()=>{ tts.voice = pickVoice(); }; }catch(e){} }
-function speak(text){
+if(tts.ok){ try{ speechSynthesis.addEventListener ? speechSynthesis.addEventListener("voiceschanged", ()=>{ tts.map = null; }) : (speechSynthesis.onvoiceschanged = ()=>{ tts.map = null; }); }catch(e){} }
+const voiceOn = () => tts.ok && tts.unlocked && !!D().settings.tts;
+const waitMs = ms => new Promise(r=>setTimeout(r, ms));
+function readMs(text){ const w = (text.match(/\S+/g)||[]).length; return Math.min(9000, Math.max(2500, 800 + w*340)); }
+function stopSpeech(){
+  tts.tok++;
+  const f = tts.curFin; tts.curFin = null; if(f) f("cancel");
+  try{ if(tts.ok) speechSynthesis.cancel(); }catch(e){}
+}
+/* 한 줄 말하기 → "end" | "error" | "nostart" | "timeout" | "cancel" | "off" */
+function utter(who, text, opts){
+  opts = opts || {};
+  if(!tts.ok || !(opts.force || voiceOn())) return Promise.resolve("off");
   return new Promise(res=>{
-    if(!tts.ok || !tts.unlocked || !D().settings.tts) return res(false);
-    try{
-      const u = new SpeechSynthesisUtterance(text);
-      tts.voice = tts.voice || pickVoice(); if(tts.voice) u.voice = tts.voice;
-      u.lang = "en-US"; u.rate = 0.95;
-      const t = setTimeout(()=>res(true), 15000);
-      u.onend = u.onerror = ()=>{ clearTimeout(t); res(true); };
-      speechSynthesis.speak(u);
-    }catch(e){ res(false); }
+    const go = ()=>{
+      const tok = ++tts.tok;
+      if(!tts.map) assignVoices();
+      const v = tts.map[who] || tts.map.ellie;
+      let u;
+      try{
+        u = new SpeechSynthesisUtterance(text);
+        if(v.voice){ u.voice = v.voice; u.lang = v.voice.lang; } else u.lang = "en-US";
+        u.pitch = v.pitch; u.rate = v.rate;
+      }catch(e){ return res("error"); }
+      let started = false, done = false, t1, t2;
+      const fin = r => { if(done) return; done = true; clearTimeout(t1); clearTimeout(t2); if(tts.cur===u) tts.cur = null; if(tts.curFin===fin) tts.curFin = null; res(r); };
+      u.onstart = ()=>{ started = true; };
+      u.onend = ()=> fin(tok===tts.tok ? "end" : "cancel");
+      u.onerror = e => fin(tok!==tts.tok || (e && /interrupt|cancel/i.test(e.error||"")) ? "cancel" : "error");
+      // 소리가 시작되지 않거나 onend가 오지 않으면 멈추고 넘어감 (멈춰서 기다리지 않게)
+      t1 = setTimeout(()=>{ if(!started && !done){ if(tok===tts.tok){ tts.tok++; try{ speechSynthesis.cancel(); }catch(e){} } fin("nostart"); } }, 4000*SPEED);
+      t2 = setTimeout(()=>{ if(!done){ if(tok===tts.tok){ tts.tok++; try{ speechSynthesis.cancel(); }catch(e){} } fin("timeout"); } }, (5000 + text.length*110/(v.rate||1))*SPEED);
+      tts.cur = u; tts.curFin = fin;   // 참조 유지 (iOS에서 onend가 사라지는 문제 방지)
+      try{ speechSynthesis.speak(u); }catch(e){ fin("error"); }
+    };
+    const busy = tts.curFin || (()=>{ try{ return speechSynthesis.speaking || speechSynthesis.pending; }catch(e){ return false; } })();
+    if(!busy && !(tts.pending && !opts.force) && !(replay.p && !opts.force)){ go(); return; }   // 탭 안에서는 바로 말해야 iOS 소리가 풀림
+    (async ()=>{
+      if(!opts.force){
+        if(tts.pending){ await Promise.race([tts.pending, waitMs(3000)]); await waitMs(GAP*SPEED); }
+        while(replay.p) await replay.p;
+      }
+      if(tts.curFin || opts.force) stopSpeech();
+      try{ if(speechSynthesis.speaking || speechSynthesis.pending){ speechSynthesis.cancel(); await waitMs(80); } }catch(e){}
+      go();
+    })();
   });
 }
+const visible = () => new Promise(r=>{ if(!document.hidden) return r(); const f = ()=>{ if(!document.hidden){ document.removeEventListener("visibilitychange", f); r(); } }; document.addEventListener("visibilitychange", f); });
+document.addEventListener("visibilitychange", ()=>{
+  if(document.hidden){ stopSpeech(); }                  // 백그라운드로 가면 소리를 멈춤
+  else { try{ if(tts.ok) speechSynthesis.resume(); }catch(e){} }   // 돌아오면 그 대사를 처음부터 다시 말함 (perform)
+});
+addEventListener("pagehide", ()=>stopSpeech());
+/* 「다시 듣기」 */
+const replay = { p:null, mid:null, who:null };
+function doReplay(m){
+  if(!tts.ok){ toast("이 브라우저는 소리 읽기를 지원하지 않아요"); return; }
+  tts.unlocked = true;
+  replay.mid = m.id; replay.who = m.who;
+  const p = utter(m.who, m.text, {force:true});
+  replay.p = p; refresh3();
+  p.then(r=>{
+    if(replay.p===p){ replay.p = null; replay.mid = null; replay.who = null; refresh3(); }
+    if(r==="nostart" || r==="error") toast("소리가 안 나면 아이폰 옆 무음 스위치와 볼륨을 확인해 주세요");
+  });
+}
+
+/* ---------------- ② 교실 입장 ---------------- */
 function welcomeText(a){
   return a.isExample ? `Welcome, ${name()}! Today we'll talk about cafés and laptop limits. Max, Yuna, Leo — say hi!`
     : `Welcome, ${name()}! Today we'll talk about "${a.title}". Max, Yuna, Leo — say hi!`;
@@ -182,19 +266,21 @@ function renderS2(){
     return `<li class="glass" style="--c:${c.color}"><div class="av" aria-hidden="true">${c.emoji}</div><div><b>${c.name}</b><span>${c.desc}</span></div><i>${c.side}</i></li>`; }).join("");
   const b = $("#ttsBtn");
   if(!tts.ok){ b.disabled = true; b.textContent = "목소리 미지원"; }
-  else { b.textContent = "선생님 목소리 · " + (D().settings.tts ? "켬" : "끔"); b.setAttribute("aria-pressed", D().settings.tts); b.classList.toggle("gold", !!D().settings.tts); }
+  else { b.textContent = "목소리 · " + (D().settings.tts ? "켬" : "끔"); b.setAttribute("aria-pressed", D().settings.tts); b.classList.toggle("gold", !!D().settings.tts); }
   const s = activeSession();
   $("#startBtn").textContent = s && !s.done ? "수업 이어하기" : "수업 시작";
 }
 $("#ttsBtn").onclick = ()=>{
   D().settings.tts = !D().settings.tts; save(); renderS2();
-  if(D().settings.tts) toast("수업 시작을 누르면 선생님 말을 소리로 읽어 드려요");
-  else if(tts.ok) try{ speechSynthesis.cancel(); }catch(e){}
+  if(D().settings.tts) toast("수업 시작을 누르면 선생님과 친구들 말을 소리로 들려드려요");
+  else stopSpeech();
 };
 $("#startBtn").onclick = ()=>{
   // iOS: 소리는 사용자가 누른 순간에만 잠금 해제됨 → 이 탭 안에서 바로 한 번 말하기
   if(tts.ok && D().settings.tts){
-    try{ speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance("Let's begin!"); u.lang="en-US"; tts.voice = pickVoice(); if(tts.voice) u.voice=tts.voice; speechSynthesis.speak(u); tts.unlocked = true; }catch(e){}
+    tts.unlocked = true; tts.map = null;
+    const p = utter("ellie", "Let's begin!", {force:true});
+    tts.pending = p; p.then(()=>{ if(tts.pending===p) tts.pending = null; });
   }
   let s = activeSession();
   if(!s || s.done) s = newSession();
@@ -213,11 +299,12 @@ function newSession(){
 }
 
 /* ---------------- ③ 토론 ---------------- */
-let playing = false, gen = 0, talking = null;
+let playing = false, gen = 0, typing = null, speaking = null;
 function cur(){ const s = activeSession(); return s; }
+const nowTalk = () => typing || (replay.who) || (speaking && speaking.who) || null;
 function renderSeats(){
-  const s=cur(); const last = s ? s.messages.filter(x=>x.who && x.who!=="me").slice(-1)[0] : null;
-  $("#seatsSmall").innerHTML = seatsHTML(false, talking || (s&&s.awaiting ? "me" : (last && last.who)), s&&s.hand);
+  const s=cur();
+  $("#seatsSmall").innerHTML = seatsHTML(false, nowTalk() || (s&&s.awaiting ? "me" : null), s&&s.hand);
 }
 function renderQ(){
   const a = S.article(); const s = cur(); const qi = s ? Math.min(s.q, a.questions.length-1) : 0;
@@ -226,18 +313,23 @@ function renderQ(){
   $("#qText").textContent = a.questions[qi]; $("#qText").lang="en";
 }
 function msgHTML(m, s){
-  if(m.kind==="sys") return `<p class="sys"><span class="tag">예시 대본</span>미리 써둔 대본으로 진행돼요 · 진짜 AI 토론은 곧 연결돼요</p>`;
+  if(m.kind==="sys"){
+    const unlock = tts.ok && D().settings.tts && !tts.unlocked && !s.done ? `<button type="button" class="txtbtn gold" data-act="unlock">🔊 소리 켜고 듣기</button>` : "";
+    return `<p class="sys"><span class="tag">예시 대본</span>미리 써둔 대본으로 진행돼요 · 진짜 AI 토론은 곧 연결돼요</p>${unlock?`<div class="sys">${unlock}</div>`:""}`;
+  }
   if(m.kind==="end") return `<div class="sys" style="display:flex;gap:14px;justify-content:center;flex-wrap:wrap"><a class="txtbtn gold" href="#4">노트 보기</a><button type="button" class="txtbtn sub" data-act="again">처음부터 다시</button></div>`;
   const c = EC.CAST[m.who];
   const isMe = m.who==="me";
-  const lastOther = s.messages.filter(x=>x.who && x.who!=="me").slice(-1)[0];
-  const isTalk = !isMe && !talking && lastOther===m;
+  const active = !isMe && speaking && speaking.mid===m.id && !replay.mid;
+  const isTalk = !isMe && (replay.mid ? replay.mid===m.id : active);
   let body;
   if(isMe && m.fix && m.fix.changed) body = m.fix.segs.map(g=> g.t!=null ? esc(g.t) : `<span class="oops">${esc(g.old)}</span>`).join("");
   else body = esc(m.text);
   const side = c.side && !isMe ? ` <span class="side">${c.side}</span>` : "";
   const role = m.who==="ellie" ? " · 선생님" : "";
-  let h = `<div class="m${isMe?" me":""}${isTalk?" talk":""}" style="--c:${c.color}" data-mid="${m.id}"><div class="av" aria-hidden="true">${c.emoji}</div><div class="b glass"><div class="who">${esc(isMe?"나":c.short)}${role}${side}</div><span lang="en">${body}</span></div></div>`;
+  const skip = active ? `<button type="button" class="skip" data-act="skip">건너뛰기 ⏭</button>` : "";
+  const rp = !isMe && tts.ok ? `<button type="button" class="rp" data-act="replay" data-mid="${m.id}" aria-label="다시 듣기">🔊</button>` : "";
+  let h = `<div class="m${isMe?" me":""}${isTalk?" talk":""}" style="--c:${c.color}" data-mid="${m.id}"><div class="av" aria-hidden="true">${c.emoji}</div><div class="b glass"${active?' data-act="skip"':""}><div class="who">${esc(isMe?"나":c.short)}${role}${side}</div><span lang="en">${body}</span>${skip}</div>${rp}</div>`;
   if(isMe && m.fix && m.fix.changed){
     const neu = m.fix.segs.map(g=> g.t!=null ? esc(g.t) : `<ins>${esc(g.neu)}</ins>`).join("");
     h += `<div class="fix glass"><span class="h">더 자연스러운 표현</span><p lang="en">${neu}</p><div class="row"><small>${esc(m.fix.whys.join(" · "))}</small><button type="button" class="txtbtn sub" data-act="retry" data-mid="${m.id}">다시 말해보기</button></div></div>`;
@@ -251,7 +343,7 @@ function renderChat(){
     return;
   }
   let h = s.messages.map(m=>msgHTML(m,s)).join("");
-  if(talking) { const c=EC.CAST[talking]; h += `<div class="m typing talk" style="--c:${c.color}"><div class="av" aria-hidden="true">${c.emoji}</div><div class="b glass"><div class="who">${esc(c.short)}</div>•••</div></div>`; }
+  if(typing) { const c=EC.CAST[typing]; h += `<div class="m typing talk" style="--c:${c.color}"><div class="av" aria-hidden="true">${c.emoji}</div><div class="b glass"><div class="who">${esc(c.short)}</div>•••</div></div>`; }
   chat.innerHTML = h;
   chat.scrollTop = chat.scrollHeight;
 }
@@ -261,44 +353,80 @@ function renderS3(){
   $(".composer .in").classList.toggle("ask", !!(s && s.awaiting));
   $("#replyIn").placeholder = s && s.awaiting ? "내 차례예요 · 영어로 써 보세요" : "영어로 내 생각 쓰기";
   $("#handBtn").classList.toggle("up", !!(s && s.hand));
-  if(s && s.queue.length && !playing) play();
+  if(s && s.queue.length && !playing && location.hash==="#3") play();
 }
 function refresh3(){ if(location.hash==="#3") renderS3(); }
 
+/* 한 대사: 말하기(onend + 0.6초) 또는 읽는 시간만큼 기다리기. 건너뛰기·다른 화면·손들기면 바로 끝 */
+function perform(line, m, my){
+  return new Promise(done=>{
+    let finished = false;
+    const ctl = {};
+    const finish = ()=>{ if(finished) return; finished = true; if(tts.ctl===ctl) tts.ctl = null; done(); };
+    ctl.skip = ()=>{ if(finished) return; stopSpeech(); finish(); };
+    tts.ctl = ctl;
+    const live = ()=> !finished && my===gen;
+    (async ()=>{
+      const t0 = Date.now();
+      let r;
+      for(;;){
+        r = await utter(line.who, line.text);
+        if(!live()) return finish();
+        if(r==="cancel"){
+          if(replay.p){ while(replay.p && live()) await replay.p; if(!live()) return finish(); r = "end"; }
+          else if(document.hidden){ await visible(); if(!live()) return finish(); await waitMs(400); continue; }   // 앱으로 돌아오면 그 대사를 다시
+          else r = "error";
+        }
+        break;
+      }
+      if(r==="end") await sleep(GAP);
+      else { const rest = readMs(line.text) - (Date.now()-t0)/SPEED; if(rest>0) await sleep(rest); }
+      while(live() && (document.hidden || replay.p)){ if(document.hidden) await visible(); if(replay.p) await replay.p; }
+      finish();
+    })();
+  });
+}
 async function play(){
   if(playing) return; playing = true;
   const my = gen;
   try{
     let s = cur();
     while(s && s.queue.length){
+      if(location.hash!=="#3") return;
       // 테스트 전용: 스크린샷 순간을 고정할 때만 사용 (__eclassHoldAt = 메시지 수)
       while(window.__eclassHoldAt && s.messages.length >= window.__eclassHoldAt){ await new Promise(r=>setTimeout(r,60)); if(my!==gen) return; }
       const line = s.queue[0];
-      talking = line.who; refresh3();
-      const delay = Math.min(2600, 650 + line.text.length*16);
-      await sleep(delay);
-      if(my!==gen){ return; }
+      typing = line.who; refresh3();
+      await sleep(Math.min(1100, 450 + line.text.length*5));
+      if(my!==gen) return;
       { const qi = s.queue.indexOf(line); if(qi>=0) s.queue.splice(qi,1); }
-      talking = null;
+      typing = null;
       if(line.q!=null){ s.q = line.q; s.attempt = 0; }
-      s.messages.push({id:EC.uid("m"), who:line.who, text:line.text, t:Date.now()});
+      const m = {id:EC.uid("m"), who:line.who, text:line.text, t:Date.now()};
+      s.messages.push(m);
       if(line.invite){ s.awaiting = true; s.hand = false; }
       if(line.end){ s.done = true; s.endedAt = Date.now(); s.awaiting = false; s.messages.push({id:EC.uid("m"), kind:"end"}); makeNote(s); }
-      save(); refresh3();
-      if(line.who==="ellie"){ const spoke = await speak(line.text); if(my!==gen) return; if(!spoke) await sleep(300); }
-      else await sleep(350);
+      save();
+      speaking = {who:line.who, mid:m.id}; refresh3();
+      await perform(line, m, my);
       if(my!==gen) return;
+      speaking = null; refresh3();
       s = cur();
     }
   } finally {
-    if(my===gen){ playing = false; talking = null; refresh3(); }
+    if(my===gen){ playing = false; typing = null; speaking = null; refresh3(); }
   }
 }
+function halt(){
+  gen++; playing = false; typing = null; speaking = null;
+  if(tts.ctl) tts.ctl.skip();
+  if(replay.p){ replay.p = null; replay.mid = null; replay.who = null; }
+  stopSpeech();
+}
 function interrupt(){
-  gen++; playing = false; talking = null;
+  halt();
   const s = cur(); if(!s) return;
   s.queue = s.queue.filter(l=>!l.pre);   // 아직 말하지 않은 친구 대사는 건너뜀
-  try{ if(tts.ok) speechSynthesis.cancel(); }catch(e){}
 }
 $("#handBtn").onclick = ()=>{
   const s = cur();
@@ -323,7 +451,7 @@ $("#composer").addEventListener("submit", e=>{
   if(s.retry){
     // 「다시 말해보기」 답: 흐름은 그대로 두고 선생님 한마디만 먼저
     s.retry = null; msg.retryOf = true;
-    gen++; playing = false; talking = null;   // 지금 말하려던 대사는 잠깐 미루고 선생님이 먼저 반응
+    halt();   // 지금 말하려던 대사는 잠깐 미루고 선생님이 먼저 반응
     s.messages.push(msg);
     s.queue.unshift({who:"ellie", text: fix.changed ? `Almost there! Check the note once more.` : `Much better, ${name()}! That sounds natural.`});
     save(); renderS3(); play(); return;
@@ -353,7 +481,13 @@ $("#chat").addEventListener("click", e=>{
     s.retry = b.dataset.mid; save();
     const inp = $("#replyIn"); inp.value = m ? m.text : ""; inp.placeholder = "고쳐서 다시 보내 보세요"; inp.focus();
   }
-  if(b.dataset.act==="again"){ newSession(); renderS3(); play(); }
+  if(b.dataset.act==="again"){ halt(); newSession(); renderS3(); play(); }
+  if(b.dataset.act==="skip"){ if(tts.ctl) tts.ctl.skip(); if(replay.p){ replay.p=null; replay.mid=null; replay.who=null; stopSpeech(); } }
+  if(b.dataset.act==="replay"){ const m = s.messages.find(x=>x.id===b.dataset.mid); if(m) doReplay(m); }
+  if(b.dataset.act==="unlock"){
+    const m = (speaking && s.messages.find(x=>x.id===speaking.mid)) || s.messages.filter(x=>x.who && x.who!=="me").slice(-1)[0];
+    if(m) doReplay(m); else { tts.unlocked = true; refresh3(); }
+  }
 });
 
 /* ---------------- ④ 내 생각 노트 ---------------- */
@@ -437,11 +571,22 @@ fitViewport();
 
 /* ---------------- 오프라인 캐시 (https 또는 localhost에서만) ---------------- */
 if("serviceWorker" in navigator && (location.protocol==="https:" || location.hostname==="localhost" || location.hostname==="127.0.0.1") && !params.has("nosw")){
-  navigator.serviceWorker.register("sw.js").catch(()=>{});
+  const hadCtl = !!navigator.serviceWorker.controller; let reloaded = false;
+  navigator.serviceWorker.register("sw.js").then(reg=>{
+    // 홈 화면 앱은 다시 열어도 새로 고침이 잘 안 됨 → 앱으로 돌아올 때 새 버전 확인
+    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) reg.update().catch(()=>{}); });
+  }).catch(()=>{});
+  navigator.serviceWorker.addEventListener("controllerchange", ()=>{
+    if(!hadCtl || reloaded) return;
+    if(location.hash==="#3" && (playing || speaking)) { toast("새 버전이 준비됐어요 · 앱을 다시 열면 적용돼요"); return; }
+    reloaded = true; location.reload();
+  });
 }
 
 /* 테스트용 훅 (분석·추적 없음) */
-window.__eclass = { store:S, get playing(){ return playing; }, cur, wipe(){ S.wipe(); S.save(); } };
+window.__eclass = { store:S, get playing(){ return playing; }, get speaking(){ return speaking; }, get typing(){ return typing; }, get unlocked(){ return tts.unlocked; },
+  voices(){ const m = tts.map || assignVoices(); const o={}; for(const k in m) o[k] = { name: m[k].voice ? m[k].voice.name : null, pitch:m[k].pitch, rate:m[k].rate, shared:m[k].shared }; return o; },
+  cur, wipe(){ S.wipe(); S.save(); } };
 route();
 window.__eclassReady = true;
 })();
