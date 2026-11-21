@@ -1,7 +1,3 @@
-<div align="right">
-<a href="https://jonghun9982-crypto.github.io/english-classroom/">Live</a>
-</div>
-
 # 가상 영어 교실
 
 영어 뉴스 기사(PDF)를 올리고 AI 선생님·반 친구들과 토론하는 연습용 웹앱 데모 (아이폰 홈 화면 앱 지원)
